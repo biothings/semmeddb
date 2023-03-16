@@ -560,14 +560,14 @@ def map_retired_cuis(predication_data_frame: pd.DataFrame, retirement_mapping_da
 
 
 def delete_equivalent_ncbigene_ids(predication_data_frame: pd.DataFrame,
-                                   node_normalizer_cache_input: str = None,
-                                   node_normalizer_cache_output: str = None):
+                                   node_norm_cache_filepath: str = None,
+                                   write_node_norm_cache: bool = False):
     def get_cui_to_gene_id_maps(sub_cui_flags: pd.Series, obj_cui_flags: pd.Series, chunk_size=1000):
         sub_cuis = set(predication_data_frame.loc[sub_cui_flags, "SUBJECT_CUI"].unique())
         obj_cuis = set(predication_data_frame.loc[obj_cui_flags, "OBJECT_CUI"].unique())
 
-        if node_normalizer_cache_input and os.path.exists(node_normalizer_cache_input):
-            with open(node_normalizer_cache_input, 'rb') as handle:
+        if node_norm_cache_filepath and os.path.exists(node_norm_cache_filepath):
+            with open(node_norm_cache_filepath, 'rb') as handle:
                 cui_gene_id_map = pickle.load(handle)
         else:
             cuis = sub_cuis.union(obj_cuis)
@@ -575,8 +575,8 @@ def delete_equivalent_ncbigene_ids(predication_data_frame: pd.DataFrame,
             cui_gene_id_map = query_node_normalizer_for_equivalent_ncbigene_ids(cuis, chunk_size=chunk_size)
 
         # Output to the specified pickle file regardless if it's cache or live response
-        if node_normalizer_cache_output:
-            with open(node_normalizer_cache_output, 'wb') as handle:
+        if write_node_norm_cache:
+            with open(node_norm_cache_filepath, 'wb') as handle:
                 pickle.dump(cui_gene_id_map, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
         sub_cui_gene_id_map = {cui: gene_id for cui, gene_id in cui_gene_id_map.items() if cui in sub_cuis}
@@ -789,7 +789,8 @@ def construct_document(predication: pd.Series, semantic_type_map, semmed_sentenc
 def construct_semmed_predication_data_frame(semmed_predication_filepath,
                                             mrcui_filepath,
                                             umls_cui_name_semtype_filepath,
-                                            nord_norm_cache_filepath) -> pd.DataFrame:
+                                            node_norm_cache_filepath,
+                                            write_node_norm_cache: bool) -> pd.DataFrame:
     pred_df = read_semmed_predication_data_frame(semmed_predication_filepath)
     pred_df = delete_zero_novelty_scores(pred_df)
     pred_df = delete_invalid_object_cuis(pred_df)
@@ -806,7 +807,7 @@ def construct_semmed_predication_data_frame(semmed_predication_filepath,
     retirement_mapping_df = add_cui_name_and_semtype_to_retirement_mapping(retirement_mapping_df, semmed_cui_name_semtype_df, umls_cui_name_semtype_df)
     pred_df = map_retired_cuis(pred_df, retirement_mapping_df)
 
-    pred_df = delete_equivalent_ncbigene_ids(pred_df, node_normalizer_cache_input=nord_norm_cache_filepath, node_normalizer_cache_output=None)
+    pred_df = delete_equivalent_ncbigene_ids(pred_df, node_norm_cache_filepath=node_norm_cache_filepath, write_node_norm_cache=write_node_norm_cache)
 
     pred_df = add_document_id_column(pred_df)
 
@@ -833,7 +834,8 @@ def load_data(data_folder, write_semmed_cache=False):
         semmed_pred_df = construct_semmed_predication_data_frame(semmed_predication_filepath=semmed_pred_path,
                                                                  mrcui_filepath=mrcui_path,
                                                                  umls_cui_name_semtype_filepath=umls_cui_name_semtype_path,
-                                                                 nord_norm_cache_filepath=node_norm_cache_path)
+                                                                 node_norm_cache_filepath=node_norm_cache_path,
+                                                                 write_node_norm_cache=False)
 
     # Write cache only when `write_semmed_cache` is set
     if write_semmed_cache:
