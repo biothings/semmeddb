@@ -11,6 +11,9 @@ def semmeddb_prediction_mapping(cls):
         "pmid": {
             "type": "integer"
         },
+        "sentence": {
+            "type": "text"
+        },
         "subject": {
             "properties": {
                 "umls": {
