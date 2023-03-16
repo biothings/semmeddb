@@ -24,7 +24,6 @@ if __name__ == '__main__':
     print(f"[Aux] UMLS Preferred CUI Names & Semtypes: {umls_cui_name_semtype_path}")
     print(f"[Aux] UMLS Semtype Mapping: {semtype_mapping_path}")
 
-    # Always read the cache if available
     if semmed_pred_cache_path and os.path.exists(semmed_pred_cache_path):
         print(f"[Cache] SemMedDB Predication Cache {semmed_pred_cache_path} exists.")
     else:
@@ -33,7 +32,8 @@ if __name__ == '__main__':
     semmed_pred_df = construct_semmed_predication_data_frame(semmed_predication_filepath=semmed_pred_path,
                                                              mrcui_filepath=mrcui_path,
                                                              umls_cui_name_semtype_filepath=umls_cui_name_semtype_path,
-                                                             nord_norm_cache_filepath=node_norm_cache_path)
+                                                             node_norm_cache_filepath=node_norm_cache_path,
+                                                             write_node_norm_cache=True)
 
     print(f"[Cache] SemMedDB Predication Cache {semmed_pred_cache_path} rewriting...")
     write_semmed_predication_parquet_cache(semmed_pred_df, path=semmed_pred_cache_path)
