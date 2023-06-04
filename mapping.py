@@ -4,12 +4,40 @@ def semmeddb_prediction_mapping(cls):
             "normalizer": "keyword_lowercase_normalizer",
             "type": "keyword"
         },
-        "predication_id": {
-            "normalizer": "keyword_lowercase_normalizer",
-            "type": "keyword"
-        },
-        "pmid": {
+        "pmid_count": {
             "type": "integer"
+        },
+        "predication_count": {
+            "type": "integer"
+        },
+        "predication": {
+            "properties": {
+                "predication_id": {
+                    "type": "keyword"
+                },
+                "pmid": {
+                    "type": "keyword"
+                },
+                "sentence_id": {
+                    "type": "keyword"
+                },
+                "sentence": {
+                    "type": "text",
+                    "index": False
+                },
+                "subject_text": {
+                    "type": "text"
+                },
+                "subject_score": {
+                    "type": "integer"
+                },
+                "object_text": {
+                    "type": "text"
+                },
+                "object_score": {
+                    "type": "integer"
+                }
+            }
         },
         "subject": {
             "properties": {

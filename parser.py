@@ -1,36 +1,55 @@
 import os
+import csv
+from itertools import islice
+import logging
 from pathlib import Path
 import pickle
 import requests
 import pandas as pd
 import numpy as np
 
-from typing import Dict, Set
+from typing import Dict, Set, List, Tuple, Union
 from collections.abc import Collection  # for type hints
 
 from biothings.utils.common import iter_n
 
 """
-Constants of filenames
+Constants of filenames and directories
 """
-SEMTYPE_MAPPING_FN = "SemanticTypes_2018AB.txt"
-UMLS_PREFERRED_CUI_NAME_SEMTYPE_FN = "UMLS_CUI_Semtype.tsv"
+UMLS_METATHESAURUS_DIR = "2022AB/META"
 MRCUI_FN = "MRCUI.RRF"
 
-SEMMED_TABLE_FN = "semmedVER43_2022_R_PREDICATION.csv"
-SEMMED_FN_STEM = Path(SEMMED_TABLE_FN).stem  # string of "semmedVER43_2022_R_PREDICATION"
-# Path("semmedVER43_2022_R_PREDICATION_clean_pyarrow_snappy.parquet")
-SEMMED_TABLE_CACHE_FN = Path(SEMMED_FN_STEM + "_clean_pyarrow_snappy").with_suffix(".parquet")
-# Path("semmedVER43_2022_R_PREDICATION_NodeNorm.pickle")
-SEMMED_NODE_NORM_RESPONSE_CACHE_FN = Path(SEMMED_FN_STEM + "_NodeNorm").with_suffix(".pickle")
+SEMTYPE_MAPPING_FN = "SemanticTypes_2018AB.txt"
+UMLS_PREFERRED_CUI_NAME_SEMTYPE_FN = "UMLS_CUI_Semtype_2022AB.tsv"
 
+SEMMED_PREDICATION_FN = "semmedVER43_2023_R_PREDICATION.116080.csv"
+SEMMED_PREDICATION_AUX_FN = "semmedVER43_2023_R_PREDICATION_AUX.116080.csv"
+SEMMED_SENTENCE_FN = "semmedVER43_2023_R_SENTENCE.116080.csv"
+
+CACHE_DIR = "CACHE"
+_SEMMED_PREDICATION_PATH = Path(SEMMED_PREDICATION_FN)
+# Path("semmedVER43_2023_R_PREDICATION.116080_clean_pyarrow_snappy.parquet")
+SEMMED_PREDICATION_CACHE_FN = _SEMMED_PREDICATION_PATH.with_stem(_SEMMED_PREDICATION_PATH.stem + "_clean_pyarrow_snappy").with_suffix(".parquet")
+# Path("semmedVER43_2023_R_PREDICATION.116080_NodeNorm.pickle")
+SEMMED_NODE_NORM_RESPONSE_CACHE_FN = _SEMMED_PREDICATION_PATH.with_stem(_SEMMED_PREDICATION_PATH.stem + "_NodeNorm").with_suffix(".pickle")
+
+"""
+Constants of column names
+"""
+INDEX_COLUMNS = ["SUBJECT_CUI", "PREDICATE", "OBJECT_CUI"]
+
+"""
+A document can have at most 1000 predications. See https://github.com/biothings/biothings_explorer/issues/606#issuecomment-1562050560
+"""
+MAX_PREDICATION_LIST_LENGTH = 1000
 
 ###################################
 # PART 1: Load Semantic Type Data #
 ###################################
 
-def read_semantic_type_mappings_data_frame(data_folder, filename) -> pd.DataFrame:
-    filepath = os.path.join(data_folder, filename)
+
+def read_semantic_type_mappings_data_frame(filepath) -> pd.DataFrame:
+    separator = "|"
     column_info = [
         # See column description at https://lhncbc.nlm.nih.gov/ii/tools/MetaMap/documentation/SemanticTypesAndGroups.html
         (0, 'abbreviation', "string"),
@@ -40,7 +59,7 @@ def read_semantic_type_mappings_data_frame(data_folder, filename) -> pd.DataFram
     column_indices = [e[0] for e in column_info]
     column_names = [e[1] for e in column_info]
     column_dtypes = {e[1]: e[2] for e in column_info}
-    data_frame = pd.read_csv(filepath, sep="|", names=column_names, usecols=column_indices, dtype=column_dtypes)
+    data_frame = pd.read_csv(filepath, sep=separator, names=column_names, usecols=column_indices, dtype=column_dtypes)
 
     data_frame = data_frame.astype({
         "abbreviation": "string[pyarrow]",
@@ -61,8 +80,8 @@ def get_semtype_name_map(semantic_type_data_frame: pd.DataFrame) -> Dict:
 # PART 2: Load Retired CUI Data #
 #################################
 
-def read_mrcui_data_frame(data_folder, filename):
-    filepath = os.path.join(data_folder, filename)
+def read_mrcui_data_frame(filepath):
+    separator = "|"
     column_info = [
         # Each element is a tuple of (column_index, column_name, data_type)
         #   See column description at https://www.ncbi.nlm.nih.gov/books/NBK9685/table/ch03.T.retired_cui_mapping_file_mrcui_rr/
@@ -77,7 +96,7 @@ def read_mrcui_data_frame(data_folder, filename):
     column_indices = [e[0] for e in column_info]
     column_names = [e[1] for e in column_info]
     column_dtypes = {e[1]: e[2] for e in column_info}
-    data_frame = pd.read_csv(filepath, sep="|", names=column_names, usecols=column_indices, dtype=column_dtypes)
+    data_frame = pd.read_csv(filepath, sep=separator, names=column_names, usecols=column_indices, dtype=column_dtypes)
 
     data_frame = data_frame.astype({
         "CUI1": "string[pyarrow]",
@@ -134,8 +153,8 @@ def add_cui_name_and_semtype_to_retirement_mapping(retirement_mapping_data_frame
 #########################################################
 
 
-def read_cui_name_and_semtype_from_umls(data_folder, filename) -> pd.DataFrame:
-    filepath = os.path.join(data_folder, filename)
+def read_cui_name_and_semtype_from_umls(filepath) -> pd.DataFrame:
+    separator = "\t"
     column_info = [
         # Each element is a tuple of (column_index, column_name, data_type)
         (0, "CUI", "string"),
@@ -148,7 +167,7 @@ def read_cui_name_and_semtype_from_umls(data_folder, filename) -> pd.DataFrame:
     column_names = [e[1] for e in column_info]
     column_dtypes = {e[1]: e[2] for e in column_info}
     # Ignore the original header, use column names defined above
-    data_frame = pd.read_csv(filepath, sep="\t", header=0, names=column_names, usecols=column_indices, dtype=column_dtypes)
+    data_frame = pd.read_csv(filepath, sep=separator, header=0, names=column_names, usecols=column_indices, dtype=column_dtypes)
 
     data_frame = data_frame.astype({
         "CUI": "string[pyarrow]",
@@ -163,9 +182,85 @@ def read_cui_name_and_semtype_from_umls(data_folder, filename) -> pd.DataFrame:
 # PART 4: Load SemMed Data #
 ############################
 
-def read_semmed_data_frame(data_folder, filename) -> pd.DataFrame:
-    filepath = os.path.join(data_folder, filename)
+def read_semmed_predication_aux_map(filepath, semmed_predication_data_frame: Union[None, pd.DataFrame] = None) -> Dict:
+    """
+    Read the PREDICATION AUX table and return a dictionary of
+      <PREDICATION_ID, <SUBJECT_TEXT, SUBJECT_SCORE, OBJECT_TEXT, OBJECT_SCORE>>. E.g.
+
+        aux_map = {
+            10592604: {
+                'SUBJECT_TEXT': 'arboviruses',
+                'SUBJECT_SCORE': 840,
+                'OBJECT_TEXT': 'brown hares',
+                'OBJECT_SCORE': 884
+            },
+            10592697: {
+                'SUBJECT_TEXT': 'Tahyna virus',
+                'SUBJECT_SCORE': 1000,
+                'OBJECT_TEXT': 'California encephalitis serogroup',
+                'OBJECT_SCORE': 901
+            }
+        }
+    """
+    aux_map = dict()
+
+    # See https://docs.python.org/3/library/csv.html#csv.reader for why newline is set to empty
+    with open(filepath, newline="") as csvfile:
+        reader = csv.reader(csvfile, delimiter=",", escapechar="\\")
+
+        for row in reader:
+            # See column description of the PREDICATION_AUX table at https://lhncbc.nlm.nih.gov/ii/tools/SemRep_SemMedDB_SKR/dbinfo.html
+            # Column 1, "PREDICATION_ID", Auto-generated primary key for each PREDICATION
+            # Column 2, "SUBJECT_TEXT", Text that maps to the subject
+            # Column 7, "SUBJECT_SCORE", Confidence score of the mapping between the subject string and the subject concept (range 0~1000)
+            # Column 11, "OBJECT_TEXT", Text that maps to the object
+            # Column 16, "OBJECT_SCORE", Confidence score of the mapping between the object string and the object concept (range 0~1000)
+            pid = int(row[1])
+            aux = {
+                "subject_text": row[2],
+                "subject_score": int(row[7]),
+                "object_text": row[11],
+                "object_score": int(row[16])
+            }
+            aux_map[pid] = aux
+
+    if semmed_predication_data_frame is not None:
+        wanted_pred_ids = set(semmed_predication_data_frame["PREDICATION_ID"].unique())
+        for pid in set(aux_map):
+            if pid not in wanted_pred_ids:
+                del aux_map[pid]
+
+    return aux_map
+
+
+def read_semmed_sentence_map(filepath, semmed_predication_data_frame: Union[None, pd.DataFrame] = None) -> Dict:
+    sentence_map = dict()
+
+    # See https://docs.python.org/3/library/csv.html#csv.reader for why newline is set to empty
+    with open(filepath, newline="") as csvfile:
+        reader = csv.reader(csvfile, delimiter=",", escapechar="\\")
+
+        for row in reader:
+            # See column description of the SENTENCE table at https://lhncbc.nlm.nih.gov/ii/tools/SemRep_SemMedDB_SKR/dbinfo.html
+            #   Note that column order in CSV is different from the SQL table.
+            # Column 0, "SENTENCE_ID", Auto-generated primary key for each sentence
+            # Column 5, "SENTENCE", The actual string or text of the sentence
+            sid = int(row[0])
+            sentence = row[5]
+            sentence_map[sid] = sentence
+
+    if semmed_predication_data_frame is not None:
+        wanted_sentence_ids = set(semmed_predication_data_frame["SENTENCE_ID"].unique())
+        for sid in set(sentence_map):
+            if sid not in wanted_sentence_ids:
+                del sentence_map[sid]
+
+    return sentence_map
+
+
+def read_semmed_predication_data_frame(filepath) -> pd.DataFrame:
     encoding = "latin1"  # file may contain chars in other languages (e.g. French)
+    separator = ","
     na_value = r"\N"
     escapechar = "\\"  # single backslash, see https://github.com/biothings/semmeddb/issues/10
     column_info = [
@@ -175,7 +270,7 @@ def read_semmed_data_frame(data_folder, filename) -> pd.DataFrame:
         # "UInt32" ranges [0, 4294967295]
         #   See https://pandas.pydata.org/docs/user_guide/basics.html#basics-dtypes
         (0, "PREDICATION_ID", "UInt32"),  # column 0 (Auto-generated primary key; current max is 199,713,830)
-        # (1, "SENTENCE_ID", "string"),  # column 1 (ignored)
+        (1, "SENTENCE_ID", "UInt32"),  # column 1 (Auto-generated foreign key; current max is 395,464,361)
         (2, "PMID", "UInt32"),  # column 2 (PubMed IDs are 8-digit numbers)
         (3, "PREDICATE", "string"),  # column 3
         (4, "SUBJECT_CUI", "string"),  # column 4
@@ -193,7 +288,7 @@ def read_semmed_data_frame(data_folder, filename) -> pd.DataFrame:
     column_indices = [e[0] for e in column_info]
     column_names = [e[1] for e in column_info]
     column_dtypes = {e[1]: e[2] for e in column_info}
-    data_frame = pd.read_csv(filepath, sep=",", names=column_names, usecols=column_indices,
+    data_frame = pd.read_csv(filepath, sep=separator, names=column_names, usecols=column_indices,
                              dtype=column_dtypes, na_values=[na_value], encoding=encoding, escapechar=escapechar)
 
     data_frame = data_frame.astype({
@@ -209,7 +304,7 @@ def read_semmed_data_frame(data_folder, filename) -> pd.DataFrame:
     return data_frame
 
 
-def delete_invalid_object_cuis(semmed_data_frame: pd.DataFrame):
+def delete_invalid_object_cuis(predication_data_frame: pd.DataFrame):
     """
     This function remove rows with "invalid" object CUIs in the Semmed data frame.
     ote this operation must be done BEFORE "explode_pipes()" is called.
@@ -248,26 +343,26 @@ def delete_invalid_object_cuis(semmed_data_frame: pd.DataFrame):
     # return cui_pattern.match(object_cui.strip())
 
     cui_pattern = r"^[C0-9|]+$"  # multiple occurrences of "C", "0" to "9", or "|" (vertical bar)
-    valid_flags = semmed_data_frame["OBJECT_CUI"].str.match(cui_pattern)
-    invalid_index = semmed_data_frame.index[~valid_flags]
-    semmed_data_frame.drop(index=invalid_index, inplace=True)
-    semmed_data_frame.reset_index(drop=True, inplace=True)
-    return semmed_data_frame
+    valid_flags = predication_data_frame["OBJECT_CUI"].str.match(cui_pattern)
+    invalid_index = predication_data_frame.index[~valid_flags]
+    predication_data_frame.drop(index=invalid_index, inplace=True)
+    predication_data_frame.reset_index(drop=True, inplace=True)
+    return predication_data_frame
 
 
-def delete_zero_novelty_scores(semmed_data_frame: pd.DataFrame):
+def delete_zero_novelty_scores(predication_data_frame: pd.DataFrame):
     """
     Rows with novelty score equal to 0 should be removed.
     See discussion in https://github.com/biothings/pending.api/issues/63#issuecomment-1100469563
     """
-    zero_novelty_flags = semmed_data_frame["SUBJECT_NOVELTY"].eq(0) | semmed_data_frame["OBJECT_NOVELTY"].eq(0)
-    zero_novelty_index = semmed_data_frame.index[zero_novelty_flags]
-    semmed_data_frame.drop(index=zero_novelty_index, inplace=True)
-    semmed_data_frame.reset_index(drop=True, inplace=True)
-    return semmed_data_frame
+    zero_novelty_flags = predication_data_frame["SUBJECT_NOVELTY"].eq(0) | predication_data_frame["OBJECT_NOVELTY"].eq(0)
+    zero_novelty_index = predication_data_frame.index[zero_novelty_flags]
+    predication_data_frame.drop(index=zero_novelty_index, inplace=True)
+    predication_data_frame.reset_index(drop=True, inplace=True)
+    return predication_data_frame
 
 
-def explode_pipes(semmed_data_frame: pd.DataFrame):
+def explode_pipes(predication_data_frame: pd.DataFrame):
     """
     Split "SUBJECT_CUI", "SUBJECT_NAME", "OBJECT_CUI", and "OBJECT_NAME" by pipes. Then transform the split values into individual rows.
 
@@ -292,17 +387,17 @@ def explode_pipes(semmed_data_frame: pd.DataFrame):
         11021926        9103         FCGR2C        920         CD4
     """
 
-    sub_piped_flags = semmed_data_frame["SUBJECT_CUI"].str.contains(r"\|")
-    obj_piped_flags = semmed_data_frame["OBJECT_CUI"].str.contains(r"\|")
+    sub_piped_flags = predication_data_frame["SUBJECT_CUI"].str.contains(r"\|")
+    obj_piped_flags = predication_data_frame["OBJECT_CUI"].str.contains(r"\|")
     # These two indices are necessary to locate equivalent NCBIGene IDs
-    semmed_data_frame["IS_SUBJECT_PIPED"] = sub_piped_flags
-    semmed_data_frame["IS_OBJECT_PIPED"] = obj_piped_flags
+    predication_data_frame["IS_SUBJECT_PIPED"] = sub_piped_flags
+    predication_data_frame["IS_OBJECT_PIPED"] = obj_piped_flags
 
     piped_flags = sub_piped_flags | obj_piped_flags
-    semmed_data_frame["IS_PIPED"] = piped_flags
-    semmed_data_frame.set_index("IS_PIPED", append=False, inplace=True)  # use "IS_PIPED" as the new index; discard the original integer index
+    predication_data_frame["IS_PIPED"] = piped_flags
+    predication_data_frame.set_index("IS_PIPED", append=False, inplace=True)  # use "IS_PIPED" as the new index; discard the original integer index
 
-    piped_predications = semmed_data_frame.loc[True]
+    piped_predications = predication_data_frame.loc[True]
 
     piped_predications = piped_predications.assign(
         OBJECT_CUI=piped_predications["OBJECT_CUI"].str.split(r"\|"),
@@ -324,11 +419,11 @@ def explode_pipes(semmed_data_frame: pd.DataFrame):
 
     """
     "CUI" columns may contain empty strings and "NAME" columns may contain "None" strings, e.g.:
-    
+
         PREDICATION_ID  SUBJECT_CUI          SUBJECT_NAME              OBJECT_CUI           OBJECT_NAME
         72530597        C0757738||100329167  m-AAA protease|None|AAA1  C1330957             Cytokinesis of the fertilized ovum
         75458336        C1167321             inner membrane            C0757738||100329167  m-AAA protease|None|AAA1
-        
+
     Rows containing such values after "explode" operations should be dropped.
     """
     piped_predications.reset_index(drop=False, inplace=True)  # switch to the integer index, for ".drop(index=?)" operation below
@@ -339,54 +434,54 @@ def explode_pipes(semmed_data_frame: pd.DataFrame):
     piped_predications.drop(index=empty_value_index, inplace=True)
     piped_predications.set_index("IS_PIPED", append=False, inplace=True)  # switch back to the "IS_PIPED" index, for ".concat()" operation below
 
-    semmed_data_frame.drop(index=True, inplace=True)  # drop the original piped predications (marked by True values in "IS_PIPED" index)
-    semmed_data_frame = pd.concat([semmed_data_frame, piped_predications], copy=False)  # append the "exploded" piped predications
-    semmed_data_frame.reset_index(drop=True, inplace=True)  # drop the "IS_PIPED" index (no longer needed)
+    predication_data_frame.drop(index=True, inplace=True)  # drop the original piped predications (marked by True values in "IS_PIPED" index)
+    predication_data_frame = pd.concat([predication_data_frame, piped_predications], copy=False)  # append the "exploded" piped predications
+    predication_data_frame.reset_index(drop=True, inplace=True)  # drop the "IS_PIPED" index (no longer needed)
 
-    return semmed_data_frame
+    return predication_data_frame
 
 
-def delete_retired_cuis(semmed_data_frame: pd.DataFrame, retired_cuis: Set):
+def delete_retired_cuis(predication_data_frame: pd.DataFrame, retired_cuis: Set):
     """
     Remove rows containing deleted CUIs specified in "MRCUI.RRF" file.
     Note this operation must be done AFTER "explode_pipes()" is called.
     """
-    deleted_flags = semmed_data_frame["OBJECT_CUI"].isin(retired_cuis) | semmed_data_frame["SUBJECT_CUI"].isin(retired_cuis)
-    deleted_index = semmed_data_frame.index[deleted_flags]
-    semmed_data_frame.drop(index=deleted_index, inplace=True)
-    semmed_data_frame.reset_index(drop=True, inplace=True)
-    return semmed_data_frame
+    deleted_flags = predication_data_frame["OBJECT_CUI"].isin(retired_cuis) | predication_data_frame["SUBJECT_CUI"].isin(retired_cuis)
+    deleted_index = predication_data_frame.index[deleted_flags]
+    predication_data_frame.drop(index=deleted_index, inplace=True)
+    predication_data_frame.reset_index(drop=True, inplace=True)
+    return predication_data_frame
 
 
-def add_prefix_columns(semmed_data_frame: pd.DataFrame):
+def add_prefix_columns(predication_data_frame: pd.DataFrame):
     """
     Add 2 columns, "SUBJECT_PREFIX" and "OBJECT_PREFIX" to the SemMedDB data frame.
     If a "CUI" is a real CUI starting with the letter "C", its prefix would be "umls";
     otherwise the "CUI" should be a NCBIGene ID, and its prefix would be "ncbigene".
     """
-    subject_prefix_series = pd.Series(np.where(semmed_data_frame["SUBJECT_CUI"].str.startswith("C"), "umls", "ncbigene"), dtype="category")
-    object_prefix_series = pd.Series(np.where(semmed_data_frame["OBJECT_CUI"].str.startswith("C"), "umls", "ncbigene"), dtype="category")
+    subject_prefix_series = pd.Series(np.where(predication_data_frame["SUBJECT_CUI"].str.startswith("C"), "umls", "ncbigene"), dtype="category")
+    object_prefix_series = pd.Series(np.where(predication_data_frame["OBJECT_CUI"].str.startswith("C"), "umls", "ncbigene"), dtype="category")
 
-    semmed_data_frame = semmed_data_frame.assign(
+    predication_data_frame = predication_data_frame.assign(
         SUBJECT_PREFIX=subject_prefix_series,
         OBJECT_PREFIX=object_prefix_series
     )
 
-    return semmed_data_frame
+    return predication_data_frame
 
 
-def get_cui_name_and_semtype_from_semmed(semmed_data_frame: pd.DataFrame):
-    sub_cui_flags = semmed_data_frame["SUBJECT_PREFIX"].eq("umls")
-    obj_cui_flags = semmed_data_frame["OBJECT_PREFIX"].eq("umls")
+def get_cui_name_and_semtype_from_semmed(predication_data_frame: pd.DataFrame):
+    sub_cui_flags = predication_data_frame["SUBJECT_PREFIX"].eq("umls")
+    obj_cui_flags = predication_data_frame["OBJECT_PREFIX"].eq("umls")
 
-    sub_cui_semtype_data_frame = semmed_data_frame.loc[sub_cui_flags, ["SUBJECT_CUI", "SUBJECT_NAME", "SUBJECT_SEMTYPE"]]
-    obj_cui_semtype_data_frame = semmed_data_frame.loc[obj_cui_flags, ["OBJECT_CUI", "OBJECT_NAME", "OBJECT_SEMTYPE"]]
+    sub_cui_semtype_data_frame = predication_data_frame.loc[sub_cui_flags, ["SUBJECT_CUI", "SUBJECT_NAME", "SUBJECT_SEMTYPE"]]
+    obj_cui_semtype_data_frame = predication_data_frame.loc[obj_cui_flags, ["OBJECT_CUI", "OBJECT_NAME", "OBJECT_SEMTYPE"]]
 
     """
     Drop duplicates in advance in order to:
     1. reduce memory usage, and
     2. avoid the "ArrowInvalid: offset overflow while concatenating arrays" error due to a bug in Apache Arrow.
-    
+
     See https://issues.apache.org/jira/browse/ARROW-10799 for the bug details
     """
     sub_cui_semtype_data_frame.drop_duplicates(subset=["SUBJECT_CUI", "SUBJECT_SEMTYPE"], inplace=True)
@@ -401,11 +496,11 @@ def get_cui_name_and_semtype_from_semmed(semmed_data_frame: pd.DataFrame):
     return cui_semtype_data_frame
 
 
-def map_retired_cuis(semmed_data_frame: pd.DataFrame, retirement_mapping_data_frame: pd.DataFrame):
+def map_retired_cuis(predication_data_frame: pd.DataFrame, retirement_mapping_data_frame: pd.DataFrame):
     """
     Let's rename:
 
-    - semmed_data_frame as table A(SUBJECT_CUI, SUBJECT_NAME, SUBJECT_SEMTYPE, OBJECT_CUI, OBJECT_NAME, OBJECT_SEMTYPE), the target of replacement,
+    - predication_data_frame as table A(SUBJECT_CUI, SUBJECT_NAME, SUBJECT_SEMTYPE, OBJECT_CUI, OBJECT_NAME, OBJECT_SEMTYPE), the target of replacement,
     - retirement_mapping_data_frame as table B(CUI1, CUI2, CUI2_NAME, CUI2_SEMTYPE) where CUI1 is the retired CUI column while CUI2 is new CUI column, and
 
     The replacement is carried out in the following steps:
@@ -433,17 +528,17 @@ def map_retired_cuis(semmed_data_frame: pd.DataFrame, retirement_mapping_data_fr
     In this case, all predications with CUI C4082455 should also be marked by "replaced_sub_flags" and be deleted later
     """
     retired_cuis = set(retirement_mapping_data_frame["CUI1"].unique())
-    sub_retired_flags = semmed_data_frame["SUBJECT_CUI"].isin(retired_cuis)
-    obj_retired_flags = semmed_data_frame["OBJECT_CUI"].isin(retired_cuis)
+    sub_retired_flags = predication_data_frame["SUBJECT_CUI"].isin(retired_cuis)
+    obj_retired_flags = predication_data_frame["OBJECT_CUI"].isin(retired_cuis)
     retired_flags = sub_retired_flags | obj_retired_flags
 
-    semmed_data_frame["IS_SUBJECT_RETIRED"] = sub_retired_flags
-    semmed_data_frame["IS_OBJECT_RETIRED"] = obj_retired_flags
+    predication_data_frame["IS_SUBJECT_RETIRED"] = sub_retired_flags
+    predication_data_frame["IS_OBJECT_RETIRED"] = obj_retired_flags
 
-    # It does not matter if "retired_predications" is a view or a copy of "semmed_data_frame"
+    # It does not matter if "retired_predications" is a view or a copy of "predication_data_frame"
     #   since the below "merge" operation always returns a new dataframe.
-    # Therefore, operations on "retired_predications" won't alter "semmed_data_frame".
-    retired_predications = semmed_data_frame.loc[retired_flags]
+    # Therefore, operations on "retired_predications" won't alter "predication_data_frame".
+    retired_predications = predication_data_frame.loc[retired_flags]
 
     ##########
     # Step 2 #
@@ -497,28 +592,28 @@ def map_retired_cuis(semmed_data_frame: pd.DataFrame, retirement_mapping_data_fr
     ##########
     # Now these two columns are not necessary. Drop them to save memory
     retired_predications.drop(columns=["IS_SUBJECT_RETIRED", "IS_OBJECT_RETIRED"], inplace=True)
-    semmed_data_frame.drop(columns=["IS_SUBJECT_RETIRED", "IS_OBJECT_RETIRED"], inplace=True)
+    predication_data_frame.drop(columns=["IS_SUBJECT_RETIRED", "IS_OBJECT_RETIRED"], inplace=True)
 
     # Drop the original retired predications
-    retired_index = semmed_data_frame.index[retired_flags]
-    semmed_data_frame.drop(index=retired_index, inplace=True)
+    retired_index = predication_data_frame.index[retired_flags]
+    predication_data_frame.drop(index=retired_index, inplace=True)
 
     # Append the matched new predications
-    semmed_data_frame = pd.concat([semmed_data_frame, retired_predications], ignore_index=True, copy=False)
-    semmed_data_frame.sort_values(by="PREDICATION_ID", ignore_index=True)
+    predication_data_frame = pd.concat([predication_data_frame, retired_predications], ignore_index=True, copy=False)
+    predication_data_frame.sort_values(by="PREDICATION_ID", ignore_index=True)
 
-    return semmed_data_frame
+    return predication_data_frame
 
 
-def delete_equivalent_ncbigene_ids(semmed_data_frame: pd.DataFrame,
-                                   node_normalizer_cache_input: str = None,
-                                   node_normalizer_cache_output: str = None):
+def delete_equivalent_ncbigene_ids(predication_data_frame: pd.DataFrame,
+                                   node_norm_cache_filepath: str = None,
+                                   write_node_norm_cache: bool = False):
     def get_cui_to_gene_id_maps(sub_cui_flags: pd.Series, obj_cui_flags: pd.Series, chunk_size=1000):
-        sub_cuis = set(semmed_data_frame.loc[sub_cui_flags, "SUBJECT_CUI"].unique())
-        obj_cuis = set(semmed_data_frame.loc[obj_cui_flags, "OBJECT_CUI"].unique())
+        sub_cuis = set(predication_data_frame.loc[sub_cui_flags, "SUBJECT_CUI"].unique())
+        obj_cuis = set(predication_data_frame.loc[obj_cui_flags, "OBJECT_CUI"].unique())
 
-        if node_normalizer_cache_input and os.path.exists(node_normalizer_cache_input):
-            with open(node_normalizer_cache_input, 'rb') as handle:
+        if node_norm_cache_filepath and os.path.exists(node_norm_cache_filepath):
+            with open(node_norm_cache_filepath, 'rb') as handle:
                 cui_gene_id_map = pickle.load(handle)
         else:
             cuis = sub_cuis.union(obj_cuis)
@@ -526,8 +621,8 @@ def delete_equivalent_ncbigene_ids(semmed_data_frame: pd.DataFrame,
             cui_gene_id_map = query_node_normalizer_for_equivalent_ncbigene_ids(cuis, chunk_size=chunk_size)
 
         # Output to the specified pickle file regardless if it's cache or live response
-        if node_normalizer_cache_output:
-            with open(node_normalizer_cache_output, 'wb') as handle:
+        if write_node_norm_cache:
+            with open(node_norm_cache_filepath, 'wb') as handle:
                 pickle.dump(cui_gene_id_map, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
         sub_cui_gene_id_map = {cui: gene_id for cui, gene_id in cui_gene_id_map.items() if cui in sub_cuis}
@@ -536,8 +631,8 @@ def delete_equivalent_ncbigene_ids(semmed_data_frame: pd.DataFrame,
         return sub_cui_gene_id_map, obj_cui_gene_id_map
 
     def get_pred_id_to_cui_maps(sub_cui_flags: pd.Series, obj_cui_flags: pd.Series):
-        sub_cui_predications = semmed_data_frame.loc[sub_cui_flags, ["SUBJECT_CUI", "PREDICATION_ID"]]
-        obj_cui_predications = semmed_data_frame.loc[obj_cui_flags, ["OBJECT_CUI", "PREDICATION_ID"]]
+        sub_cui_predications = predication_data_frame.loc[sub_cui_flags, ["SUBJECT_CUI", "PREDICATION_ID"]]
+        obj_cui_predications = predication_data_frame.loc[obj_cui_flags, ["OBJECT_CUI", "PREDICATION_ID"]]
 
         pred_id_sub_cui_map = dict(zip(sub_cui_predications["PREDICATION_ID"], sub_cui_predications["SUBJECT_CUI"]))
         pred_id_obj_cui_map = dict(zip(obj_cui_predications["PREDICATION_ID"], obj_cui_predications["OBJECT_CUI"]))
@@ -549,8 +644,8 @@ def delete_equivalent_ncbigene_ids(semmed_data_frame: pd.DataFrame,
         return pid_gid_map
 
     def get_row_index_of_equivalent_ncbigene_ids(pred_id_sub_gene_id_map: Dict, pred_id_obj_gene_id_map: Dict):
-        sub_piped_predications = semmed_data_frame.loc[semmed_data_frame["IS_SUBJECT_PIPED"], ["PREDICATION_ID", "SUBJECT_CUI"]]
-        obj_piped_predications = semmed_data_frame.loc[semmed_data_frame["IS_OBJECT_PIPED"], ["PREDICATION_ID", "OBJECT_CUI"]]
+        sub_piped_predications = predication_data_frame.loc[predication_data_frame["IS_SUBJECT_PIPED"], ["PREDICATION_ID", "SUBJECT_CUI"]]
+        obj_piped_predications = predication_data_frame.loc[predication_data_frame["IS_OBJECT_PIPED"], ["PREDICATION_ID", "OBJECT_CUI"]]
 
         sub_piped_predications.reset_index(drop=False, inplace=True)  # make the integer index a column named "index"
         obj_piped_predications.reset_index(drop=False, inplace=True)  # make the integer index a column named "index"
@@ -571,65 +666,65 @@ def delete_equivalent_ncbigene_ids(semmed_data_frame: pd.DataFrame,
         dest_gid_index = dest_sub_gid_index.union(dest_obj_gid_index)
         return dest_gid_index
 
-    candidate_sub_cui_flags = semmed_data_frame["IS_SUBJECT_PIPED"] & semmed_data_frame["SUBJECT_PREFIX"].eq("umls")
-    candidate_obj_cui_flags = semmed_data_frame["IS_OBJECT_PIPED"] & semmed_data_frame["OBJECT_PREFIX"].eq("umls")
+    candidate_sub_cui_flags = predication_data_frame["IS_SUBJECT_PIPED"] & predication_data_frame["SUBJECT_PREFIX"].eq("umls")
+    candidate_obj_cui_flags = predication_data_frame["IS_OBJECT_PIPED"] & predication_data_frame["OBJECT_PREFIX"].eq("umls")
     sub_cui_gid_map, obj_cui_gid_map = get_cui_to_gene_id_maps(candidate_sub_cui_flags, candidate_obj_cui_flags, chunk_size=1000)
 
-    source_sub_cui_flags = semmed_data_frame["IS_SUBJECT_PIPED"] & semmed_data_frame["SUBJECT_CUI"].isin(sub_cui_gid_map)
-    source_obj_cui_flags = semmed_data_frame["IS_OBJECT_PIPED"] & semmed_data_frame["OBJECT_CUI"].isin(obj_cui_gid_map)
+    source_sub_cui_flags = predication_data_frame["IS_SUBJECT_PIPED"] & predication_data_frame["SUBJECT_CUI"].isin(sub_cui_gid_map)
+    source_obj_cui_flags = predication_data_frame["IS_OBJECT_PIPED"] & predication_data_frame["OBJECT_CUI"].isin(obj_cui_gid_map)
     pid_sub_cui_map, pid_obj_cui_map = get_pred_id_to_cui_maps(source_sub_cui_flags, source_obj_cui_flags)
 
     pid_sub_gid_map = establish_pred_id_to_gene_id_map(pid_sub_cui_map, sub_cui_gid_map)
     pid_obj_gid_map = establish_pred_id_to_gene_id_map(pid_obj_cui_map, obj_cui_gid_map)
 
     dest_equivalent_gid_index = get_row_index_of_equivalent_ncbigene_ids(pid_sub_gid_map, pid_obj_gid_map)
-    semmed_data_frame.drop(index=dest_equivalent_gid_index, inplace=True)
+    predication_data_frame.drop(index=dest_equivalent_gid_index, inplace=True)
 
     # Now these two columns are not necessary. Drop them to save memory
-    semmed_data_frame.drop(columns=["IS_SUBJECT_PIPED", "IS_OBJECT_PIPED"], inplace=True)
+    predication_data_frame.drop(columns=["IS_SUBJECT_PIPED", "IS_OBJECT_PIPED"], inplace=True)
 
-    return semmed_data_frame
+    return predication_data_frame
 
 
-def add_document_id_column(semmed_data_frame: pd.DataFrame):
+def add_document_id_column(predication_data_frame: pd.DataFrame):
     # CUIs in descending order so a true CUI always precedes a NCBIGene ID inside a predication group
-    semmed_data_frame.sort_values(by=['PREDICATION_ID', 'SUBJECT_CUI', 'OBJECT_CUI'],
-                                  ascending=[True, False, False], ignore_index=True, inplace=True)
+    predication_data_frame.sort_values(by=['PREDICATION_ID', 'SUBJECT_CUI', 'OBJECT_CUI'],
+                                       ascending=[True, False, False], ignore_index=True, inplace=True)
 
-    pred_groups = semmed_data_frame.loc[:, ["PREDICATION_ID"]].groupby("PREDICATION_ID")
+    pred_groups = predication_data_frame.loc[:, ["PREDICATION_ID"]].groupby("PREDICATION_ID")
     groupwise_pred_nums = pred_groups.cumcount().add(1)
     group_sizes = pred_groups.transform("size")
 
-    primary_ids = semmed_data_frame["PREDICATION_ID"].astype("string[pyarrow]")
-    secondary_ids = (f"{pid}-{num}" for pid, num in zip(semmed_data_frame["PREDICATION_ID"], groupwise_pred_nums))
-    secondary_ids = pd.Series(data=secondary_ids, dtype="string[pyarrow]", index=semmed_data_frame.index)
+    primary_ids = predication_data_frame["PREDICATION_ID"].astype("string[pyarrow]")
+    secondary_ids = (f"{pid}-{num}" for pid, num in zip(predication_data_frame["PREDICATION_ID"], groupwise_pred_nums))
+    secondary_ids = pd.Series(data=secondary_ids, dtype="string[pyarrow]", index=predication_data_frame.index)
 
     _ids = pd.Series(data=np.where(group_sizes.eq(1), primary_ids, secondary_ids),
-                     dtype="string[pyarrow]", index=semmed_data_frame.index)
-    semmed_data_frame["_ID"] = _ids
-    return semmed_data_frame
+                     dtype="string[pyarrow]", index=predication_data_frame.index)
+    predication_data_frame["_ID"] = _ids
+    return predication_data_frame
 
 
-def write_parquet_cache(semmed_data_frame: pd.DataFrame, path: str):
+def write_semmed_predication_parquet_cache(predication_data_frame: pd.DataFrame, path: str):
     # Option description see https://pandas.pydata.org/pandas-docs/version/1.1/reference/api/pandas.DataFrame.to_parquet.html
     engine = "pyarrow"
     compression = "snappy"
 
-    semmed_data_frame.to_parquet(path=path, index=False, engine=engine, compression=compression)
+    predication_data_frame.to_parquet(path=path, index=False, engine=engine, compression=compression)
 
 
-def read_parquet_cache(path: str) -> pd.DataFrame:
+def read_semmed_predication_parquet_cache(path: str) -> pd.DataFrame:
     # Option description see https://pandas.pydata.org/pandas-docs/version/1.1/reference/api/pandas.DataFrame.to_parquet.html
     engine = "pyarrow"
-    semmed_data_frame = pd.read_parquet(path=path, engine=engine)
+    predication_data_frame = pd.read_parquet(path=path, engine=engine)
 
     string_columns = ["_ID", "PREDICATE", "SUBJECT_CUI", "SUBJECT_NAME", "SUBJECT_SEMTYPE", "OBJECT_CUI", "OBJECT_NAME", "OBJECT_SEMTYPE"]
-    existing_string_columns = [col for col in string_columns if col in semmed_data_frame.columns]
+    existing_string_columns = [col for col in string_columns if col in predication_data_frame.columns]
     dtype_map = {col: "string[pyarrow]" for col in existing_string_columns}
 
-    semmed_data_frame = semmed_data_frame.astype(dtype=dtype_map, copy=False)
+    predication_data_frame = predication_data_frame.astype(dtype=dtype_map, copy=False)
 
-    return semmed_data_frame
+    return predication_data_frame
 
 
 ##################################
@@ -687,47 +782,144 @@ def query_node_normalizer_for_equivalent_ncbigene_ids(cui_collection: Collection
 # PART 6: Parser #
 ##################
 
-def construct_document(row: pd.Series, semantic_type_map):
+def squeeze_list(lst: List) -> List:
     """
-    SemMedDB Database Details: https://lhncbc.nlm.nih.gov/ii/tools/SemRep_SemMedDB_SKR/dbinfo.html
-
-    Name: PREDICATION table
-    Each record in this table identifies a unique predication. The data fields of our interest are as follows:
-
-    PREDICATION_ID  : Auto-generated primary key for each unique predication
-    SENTENCE_ID     : Foreign key to the SENTENCE table
-    PREDICATE       : The string representation of each predicate (for example TREATS, PROCESS_OF)
-    SUBJECT_CUI     : The CUI of the subject of the predication
-    SUBJECT_NAME    : The preferred name of the subject of the predication
-    SUBJECT_SEMTYPE : The semantic type of the subject of the predication
-    SUBJECT_NOVELTY : The novelty of the subject of the predication
-    OBJECT_CUI      : The CUI of the object of the predication
-    OBJECT_NAME     : The preferred name of the object of the predication
-    OBJECT_SEMTYPE  : The semantic type of the object of the predication
-    OBJECT_NOVELTY  : The novelty of the object of the predication
+    If lst is a singlet (i.e. having only one element), return the element. Otherwise, return itself as is.
     """
-    doc = {
-        "_id": row["_ID"],
-        "predication_id": row["PREDICATION_ID"],
-        "pmid": row["PMID"],
-        "predicate": row["PREDICATE"],
-        "subject": {
-            row["SUBJECT_PREFIX"]: row["SUBJECT_CUI"],
-            "name": row["SUBJECT_NAME"],
-            "semantic_type_abbreviation": row["SUBJECT_SEMTYPE"],
-            "semantic_type_name": semantic_type_map.get(row["SUBJECT_SEMTYPE"], None),
-            "novelty": row["SUBJECT_NOVELTY"]
-        },
-        "object": {
-            row["OBJECT_PREFIX"]: row["OBJECT_CUI"],
-            "name": row["OBJECT_NAME"],
-            "semantic_type_abbreviation": row["OBJECT_SEMTYPE"],
-            "semantic_type_name": semantic_type_map.get(row["OBJECT_SEMTYPE"], None),
-            "novelty": row["OBJECT_NOVELTY"]
-        }
+    if len(lst) == 1:
+        return lst[0]
+    return lst
+
+
+def squeeze_series(series: pd.Series) -> List:
+    """
+    If series is a singlet (i.e. having only one element), return the element. Otherwise, return itself as a list.
+    """
+    if len(series) == 1:
+        return series[0]
+    return series.tolist()
+
+
+def construct_predication(predication_id, pmid, sentence_id, sentence: str, predication_aux: Union[Dict, None]) -> Dict:
+    """
+    Create the content for the "predication" field of the yielded docs.
+    """
+    predication = {
+        # convert numpy.UInt32 to python int; otherwise PyMongo's bson module may fail to encode these fields
+        "predication_id": int(predication_id),
+        "pmid": int(pmid),
+        "sentence_id": int(sentence_id),
+        "sentence": sentence
     }
 
-    # del semtype_name field if we did not any mappings
+    if predication_aux:
+        """
+        predication_aux could be None (rarely), see https://github.com/biothings/biothings_explorer/issues/606#issuecomment-1562368254
+        """
+        predication = {
+            **predication,
+            **predication_aux
+        }
+
+    return predication
+
+
+def construct_entity(cui, name, semtype, semtype_name, novelty, cui_prefix) -> Dict:
+    """
+    Create the content for the "subject" or "object" field of the yielded docs.
+    """
+    entity = {
+        cui_prefix: cui,
+        "name": name,
+        "semantic_type_abbreviation": semtype,
+        "semantic_type_name": semtype_name,
+        "novelty": int(novelty)  # convert numpy.Int8 to python int
+    }
+    return entity
+
+
+def construct_document(index: Tuple, value: Union[pd.Series, pd.DataFrame], value_as_df: bool,
+                       semantic_type_map: Dict, sentence_map: Dict, predication_aux_map: Dict):
+    """
+    Make a document from an index tuple of ("SUBJECT_CUI", "PREDICATE", "OBJECT_CUI"), a value Series/DataFrame of ['PREDICATION_ID', 'SENTENCE_ID', 'PMID',
+        'SUBJECT_NAME', 'SUBJECT_SEMTYPE', 'SUBJECT_NOVELTY', 'OBJECT_NAME', 'OBJECT_SEMTYPE', 'OBJECT_NOVELTY', 'SUBJECT_PREFIX', 'OBJECT_PREFIX', '_ID'].
+
+    If value_as_df is true, value is a DataFrame; otherwise a Series.
+    """
+    subject_cui, predicate, object_cui = index
+    _id = "-".join(index)
+
+    if value_as_df:
+        subject_semtype_unique = value["SUBJECT_SEMTYPE"].unique()
+        subject_semtype_name_unique = [semantic_type_map.get(semtype, None) for semtype in subject_semtype_unique]
+        object_semtype_unique = value["OBJECT_SEMTYPE"].unique()
+        object_semtype_name_unique = [semantic_type_map.get(semtype, None) for semtype in object_semtype_unique]
+        subject_dict = construct_entity(cui=subject_cui,
+                                        name=squeeze_series(value["SUBJECT_NAME"].unique()),
+                                        semtype=squeeze_series(subject_semtype_unique),
+                                        semtype_name=squeeze_list(subject_semtype_name_unique),
+                                        # value["SUBJECT_NOVELTY"] should always be 1
+                                        novelty=value["SUBJECT_NOVELTY"][0],
+                                        # value["SUBJECT_PREFIX"] should have only one unique element, "umls" or "ncbigene"
+                                        cui_prefix=value["SUBJECT_PREFIX"][0])
+        object_dict = construct_entity(cui=object_cui,
+                                       name=squeeze_series(value["OBJECT_NAME"].unique()),
+                                       semtype=squeeze_series(object_semtype_unique),
+                                       semtype_name=squeeze_list(object_semtype_name_unique),
+                                       # value["OBJECT_NOVELTY"] should always be 1
+                                       novelty=value["OBJECT_NOVELTY"][0],
+                                       # value["OBJECT_PREFIX"] should have only one element, "umls" or "ncbigene"
+                                       cui_prefix=value["OBJECT_PREFIX"][0])
+
+        _predications = (construct_predication(predication_id=pred_id,
+                                               pmid=pmid,
+                                               sentence_id=sentence_id,
+                                               sentence=sentence_map.get(sentence_id, None),
+                                               predication_aux=predication_aux_map.get(pred_id, None))
+                         for (pred_id, pmid, sentence_id) in zip(value["PREDICATION_ID"], value["PMID"], value["SENTENCE_ID"]))
+        if value.shape[0] > MAX_PREDICATION_LIST_LENGTH:
+            predication_list = list(islice(_predications, MAX_PREDICATION_LIST_LENGTH))
+        else:
+            predication_list = list(_predications)
+        # Here .unique() returns a pandas.core.arrays.integer.IntegerArray, whose .size property somehow is a numpy.int64 (ridiculous!),
+        #   which cannot be encoded by PyMongo Bson
+        # pmid_count = value["PMID"].unique().size  # DO NOT USE THIS!
+        pmid_count = len(value["PMID"].unique())
+        predication_count = len(value["PREDICATION_ID"])
+    else:
+        subject_dict = construct_entity(cui=subject_cui,
+                                        name=value["SUBJECT_NAME"],
+                                        semtype=value["SUBJECT_SEMTYPE"],
+                                        semtype_name=semantic_type_map.get(value["SUBJECT_SEMTYPE"], None),
+                                        novelty=value["SUBJECT_NOVELTY"],
+                                        cui_prefix=value["SUBJECT_PREFIX"])
+        object_dict = construct_entity(cui=object_cui,
+                                       name=value["OBJECT_NAME"],
+                                       semtype=value["OBJECT_SEMTYPE"],
+                                       semtype_name=semantic_type_map.get(value["OBJECT_SEMTYPE"], None),
+                                       novelty=value["OBJECT_NOVELTY"],
+                                       cui_prefix=value["OBJECT_PREFIX"])
+
+        predication_list = [construct_predication(predication_id=value["PREDICATION_ID"],
+                                                  pmid=value["PMID"],
+                                                  sentence_id=value["SENTENCE_ID"],
+                                                  sentence=sentence_map.get(value["SENTENCE_ID"], None),
+                                                  predication_aux=predication_aux_map.get(value["PREDICATION_ID"], None))]
+        pmid_count = 1
+        predication_count = 1
+
+    doc = {
+        # "_id": row["_ID"],  # TODO row["_ID"] is no longer useful. Shall we stop creating this column?
+        "_id": _id,
+        "predicate": predicate,
+        "predication": predication_list,
+        "pmid_count": pmid_count,
+        "predication_count": predication_count,
+        "subject": subject_dict,
+        "object": object_dict,
+    }
+
+    # del semtype_name field if we did not find any mapping
     if not doc["subject"]["semantic_type_name"]:
         del doc["subject"]["semantic_type_name"]
     if not doc["object"]["semantic_type_name"]:
@@ -736,41 +928,89 @@ def construct_document(row: pd.Series, semantic_type_map):
     return doc
 
 
+def generate_documents(predication_data_frame, semtype_name_map, sentence_map, predication_aux_map):
+    for index in set(predication_data_frame.index):  # each index is a tuple of ("SUBJECT_CUI", "PREDICATE", "OBJECT_CUI")
+        sub_df = predication_data_frame.loc[index]  # type(sub_df) is pandas.core.frame.DataFrame
+        if sub_df.shape[0] == 1:
+            value = sub_df.squeeze()  # convert one-row DataFrame into a Series (assuming multi-column)
+            value_as_df = False
+        else:
+            value = sub_df
+            value_as_df = True
+
+        doc = construct_document(index, value, value_as_df, semtype_name_map, sentence_map, predication_aux_map)
+        yield doc
+
+
+def construct_semmed_predication_data_frame(semmed_predication_filepath,
+                                            mrcui_filepath,
+                                            umls_cui_name_semtype_filepath,
+                                            node_norm_cache_filepath,
+                                            write_node_norm_cache: bool) -> pd.DataFrame:
+    pred_df = read_semmed_predication_data_frame(semmed_predication_filepath)
+    pred_df = delete_zero_novelty_scores(pred_df)
+    pred_df = delete_invalid_object_cuis(pred_df)
+    pred_df = explode_pipes(pred_df)
+
+    mrcui_df = read_mrcui_data_frame(mrcui_filepath)
+    deleted_cuis = get_retired_cuis_for_deletion(mrcui_df)
+    pred_df = delete_retired_cuis(pred_df, deleted_cuis)
+
+    pred_df = add_prefix_columns(pred_df)
+    semmed_cui_name_semtype_df = get_cui_name_and_semtype_from_semmed(pred_df)
+    umls_cui_name_semtype_df = read_cui_name_and_semtype_from_umls(umls_cui_name_semtype_filepath)  # pre-generated file; see README.md
+    retirement_mapping_df = get_retirement_mapping_data_frame(mrcui_df)
+    retirement_mapping_df = add_cui_name_and_semtype_to_retirement_mapping(retirement_mapping_df, semmed_cui_name_semtype_df, umls_cui_name_semtype_df)
+    pred_df = map_retired_cuis(pred_df, retirement_mapping_df)
+
+    pred_df = delete_equivalent_ncbigene_ids(pred_df, node_norm_cache_filepath=node_norm_cache_filepath, write_node_norm_cache=write_node_norm_cache)
+
+    pred_df = add_document_id_column(pred_df)
+
+    return pred_df
+
+
 def load_data(data_folder, write_semmed_cache=False):
-    semmed_cache_path = os.path.join(data_folder, SEMMED_TABLE_CACHE_FN)
+    # Cache filepaths
+    semmed_pred_cache_path = os.path.join(data_folder, CACHE_DIR, SEMMED_PREDICATION_CACHE_FN)
+    node_norm_cache_path = os.path.join(data_folder, CACHE_DIR, SEMMED_NODE_NORM_RESPONSE_CACHE_FN)
+    # SemMedDB filepaths
+    semmed_pred_path = os.path.join(data_folder, SEMMED_PREDICATION_FN)
+    semmed_pred_aux_path = os.path.join(data_folder, SEMMED_PREDICATION_AUX_FN)
+    semmed_sentence_path = os.path.join(data_folder, SEMMED_SENTENCE_FN)
+    # Auxiliary filepaths
+    mrcui_path = os.path.join(data_folder, UMLS_METATHESAURUS_DIR, MRCUI_FN)
+    umls_cui_name_semtype_path = os.path.join(data_folder, UMLS_PREFERRED_CUI_NAME_SEMTYPE_FN)
+    semtype_mapping_path = os.path.join(data_folder, SEMTYPE_MAPPING_FN)
 
     # Always read the cache if available
-    if semmed_cache_path and os.path.exists(semmed_cache_path):
-        semmed_df = read_parquet_cache(path=semmed_cache_path)
+    if semmed_pred_cache_path and os.path.exists(semmed_pred_cache_path):
+        logging.info(f"Reading predication cache {semmed_pred_cache_path} ...")
+        semmed_pred_df = read_semmed_predication_parquet_cache(path=semmed_pred_cache_path)
     else:
         # Start the data cleaning procedure if cache not available
-        semmed_df = read_semmed_data_frame(data_folder, SEMMED_TABLE_FN)
-        semmed_df = delete_zero_novelty_scores(semmed_df)
-        semmed_df = delete_invalid_object_cuis(semmed_df)
-        semmed_df = explode_pipes(semmed_df)
-
-        mrcui_df = read_mrcui_data_frame(data_folder, MRCUI_FN)
-        deleted_cuis = get_retired_cuis_for_deletion(mrcui_df)
-        semmed_df = delete_retired_cuis(semmed_df, deleted_cuis)
-
-        semmed_df = add_prefix_columns(semmed_df)
-        semmed_cui_name_semtype_df = get_cui_name_and_semtype_from_semmed(semmed_df)
-        umls_cui_name_semtype_df = read_cui_name_and_semtype_from_umls(data_folder, UMLS_PREFERRED_CUI_NAME_SEMTYPE_FN)  # pre-generated file; see README.md
-        retirement_mapping_df = get_retirement_mapping_data_frame(mrcui_df)
-        retirement_mapping_df = add_cui_name_and_semtype_to_retirement_mapping(retirement_mapping_df, semmed_cui_name_semtype_df, umls_cui_name_semtype_df)
-        semmed_df = map_retired_cuis(semmed_df, retirement_mapping_df)
-
-        node_normalizer_cache = os.path.join(data_folder, SEMMED_NODE_NORM_RESPONSE_CACHE_FN)
-        semmed_df = delete_equivalent_ncbigene_ids(semmed_df, node_normalizer_cache_input=node_normalizer_cache, node_normalizer_cache_output=None)
-
-        semmed_df = add_document_id_column(semmed_df)
+        logging.info(f"Reading predication table {semmed_pred_path} ...")
+        semmed_pred_df = construct_semmed_predication_data_frame(semmed_predication_filepath=semmed_pred_path,
+                                                                 mrcui_filepath=mrcui_path,
+                                                                 umls_cui_name_semtype_filepath=umls_cui_name_semtype_path,
+                                                                 node_norm_cache_filepath=node_norm_cache_path,
+                                                                 write_node_norm_cache=False)
 
     # Write cache only when `write_semmed_cache` is set
     if write_semmed_cache:
-        write_parquet_cache(semmed_df, path=semmed_cache_path)
+        logging.info(f"Writing predication cache {semmed_pred_cache_path} ...")
+        write_semmed_predication_parquet_cache(semmed_pred_df, path=semmed_pred_cache_path)
 
-    semtype_mappings_df = read_semantic_type_mappings_data_frame(data_folder, SEMTYPE_MAPPING_FN)
+    semtype_mappings_df = read_semantic_type_mappings_data_frame(filepath=semtype_mapping_path)
     semtype_name_map = get_semtype_name_map(semtype_mappings_df)
-    for _, row in semmed_df.iterrows():
-        doc = construct_document(row, semtype_name_map)
-        yield doc
+
+    logging.info(f"Reading sentence table {semmed_sentence_path} ...")
+    semmed_sentence_map = read_semmed_sentence_map(filepath=semmed_sentence_path, semmed_predication_data_frame=semmed_pred_df)
+
+    logging.info(f"Reading predication aux table {semmed_pred_aux_path} ...")
+    semmed_pred_aux_map = read_semmed_predication_aux_map(filepath=semmed_pred_aux_path, semmed_predication_data_frame=semmed_pred_df)
+
+    logging.info(f"Setting index on predication data frame ...")
+    semmed_pred_df = semmed_pred_df.set_index(INDEX_COLUMNS).sort_index()
+    logging.info(f"Generating documents from predication data frame ...")
+    yield from generate_documents(semmed_pred_df, semtype_name_map, semmed_sentence_map, semmed_pred_aux_map)

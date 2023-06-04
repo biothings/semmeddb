@@ -7,14 +7,12 @@
     },
     "dumper" : {
         "data_url" : [
-            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2022_R_PREDICATION_clean_pyarrow_snappy.parquet",
-            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2022_R_PREDICATION.csv",
-            "http://localhost:8080/dataupload/mysrc/semmeddb/MRCUI.RRF",
-            "http://localhost:8080/dataupload/mysrc/semmeddb/UMLS_CUI_Semtype.tsv",
-            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2022_R_PREDICATION_NodeNorm.pickle",
+            "http://localhost:8080/dataupload/mysrc/semmeddb/CACHE.tar.gz",
+            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2023_R_SENTENCE.116080.csv",
+            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2023_R_PREDICATION_AUX.116080.csv",
             "https://lhncbc.nlm.nih.gov/ii/tools/MetaMap/Docs/SemanticTypes_2018AB.txt"
         ],
-        "uncompress" : false,
+        "uncompress" : true,
         "release" : "version:get_release"
     },
     "uploader" : {
