@@ -307,7 +307,7 @@ def read_semmed_predication_data_frame(filepath) -> pd.DataFrame:
 def delete_invalid_object_cuis(predication_data_frame: pd.DataFrame):
     """
     This function remove rows with "invalid" object CUIs in the Semmed data frame.
-    ote this operation must be done BEFORE "explode_pipes()" is called.
+    Note this operation must be done BEFORE "explode_pipes()" is called.
 
     A "valid" object CUI present in "semmedVER43_2022_R_PREDICATION.csv" can be either:
         1. A true CUI (starting with "C", followed by seven numbers, like "C0003725")
