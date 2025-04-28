@@ -8,8 +8,8 @@
     "dumper" : {
         "data_url" : [
             "http://localhost:8080/dataupload/mysrc/semmeddb/CACHE.tar.gz",
-            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2023_R_SENTENCE.116080.csv",
-            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2023_R_PREDICATION_AUX.116080.csv",
+            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2024_R_SENTENCE.csv",
+            "http://localhost:8080/dataupload/mysrc/semmeddb/semmedVER43_2024_R_PREDICATION_AUX.csv",
             "https://lhncbc.nlm.nih.gov/ii/tools/MetaMap/Docs/SemanticTypes_2018AB.txt"
         ],
         "uncompress" : true,
